@@ -1,0 +1,70 @@
+.ctli-placeholder {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 48px;
+  min-height: 36px;
+  padding: 8px;
+  background: #eef1f4;
+  border: 1px dashed #9aa5b1;
+  border-radius: 4px;
+  color: #4a5568;
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.ctli-placeholder:hover {
+  background: #e3e8ed;
+  border-color: #6b7684;
+}
+
+.ctli-placeholder:focus-visible {
+  outline: 2px solid #3a6ea5;
+  outline-offset: 1px;
+}
+
+.ctli-placeholder .ctli-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.ctli-placeholder .ctli-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.ctli-placeholder.ctli-error {
+  background: #fdecea;
+  border-color: #d47a72;
+  color: #8a2f26;
+}
+
+.ctli-bg-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 8px;
+  background: rgba(238, 241, 244, 0.9);
+  border: 1px dashed #9aa5b1;
+  color: #4a5568;
+  font: 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  z-index: 2147483000;
+}
+
+.ctli-bg-placeholder:hover {
+  background: rgba(227, 232, 237, 0.95);
+}

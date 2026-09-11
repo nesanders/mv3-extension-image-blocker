@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><title>Dynamically injected images fixture</title></head>
+<body>
+  <h1>SPA-style dynamic image page</h1>
+  <div id="app"></div>
+  <script>
+    // Simulates a client-side route change injecting new <img> elements
+    // well after the initial page load, to exercise the MutationObserver
+    // path rather than the initial error-listener attachment.
+    setTimeout(() => {
+      const img = document.createElement('img');
+      img.id = 'dynamic-img';
+      img.src = '/images/small.png';
+      img.width = 20;
+      img.height = 20;
+      document.getElementById('app').appendChild(img);
+    }, 300);
+  </script>
+</body>
+</html>

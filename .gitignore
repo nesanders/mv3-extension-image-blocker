@@ -1,0 +1,11 @@
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+*.zip
+.DS_Store
+
+# Written by Chromium into the extension's own source directory when it's
+# loaded unpacked (DNR ruleset index cache) - not part of the extension.
+_metadata/

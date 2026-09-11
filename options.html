@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Click-to-Load Images — Options</title>
+<style>
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 480px;
+    margin: 24px auto;
+    padding: 0 16px;
+    color: #1a202c;
+  }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  p.hint { color: #6b7684; margin-top: 0; }
+  section {
+    border: 1px solid #dde2e7;
+    border-radius: 6px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  section h2 { font-size: 14px; margin: 0 0 8px; }
+  label.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .threshold-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .threshold-row input[type="number"] {
+    width: 80px;
+  }
+  #allowlist-list {
+    list-style: none;
+    margin: 8px 0;
+    padding: 0;
+  }
+  #allowlist-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid #eef1f4;
+    font-size: 13px;
+  }
+  #allowlist-list button {
+    border: none;
+    background: none;
+    color: #b23b3b;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .add-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .add-row input {
+    flex: 1;
+  }
+  #status {
+    font-size: 12px;
+    color: #4a8c4a;
+    height: 16px;
+  }
+</style>
+</head>
+<body>
+  <h1>Click-to-Load Images</h1>
+  <p class="hint">Changes save immediately — no separate save step.</p>
+
+  <section>
+    <h2>Blocking</h2>
+    <label class="row">
+      <span>Block images globally</span>
+      <input type="checkbox" id="global-enabled" />
+    </label>
+    <p class="hint">Turn this off to load images everywhere, on every site, until switched back on.</p>
+  </section>
+
+  <section>
+    <h2>Auto-load small images</h2>
+    <label class="row">
+      <span>Skip the placeholder for images under a size threshold</span>
+      <input type="checkbox" id="threshold-enabled" />
+    </label>
+    <div class="threshold-row">
+      <label for="threshold-kb">Threshold:</label>
+      <input type="number" id="threshold-kb" min="0" step="1" />
+      <span>KB</span>
+    </div>
+    <p class="hint">
+      Checking size costs one small extra request per blocked image (headers
+      only) — a deliberate tradeoff for convenience, not a bandwidth
+      optimization.
+    </p>
+  </section>
+
+  <section>
+    <h2>Per-site allowlist</h2>
+    <p class="hint">Domains where images always load normally. The toolbar icon's one-tap toggle edits this same list.</p>
+    <ul id="allowlist-list"></ul>
+    <form class="add-row" id="add-form">
+      <input type="text" id="add-domain" placeholder="example.com" />
+      <button type="submit">Add</button>
+    </form>
+  </section>
+
+  <div id="status"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -78,10 +78,10 @@
   <section>
     <h2>Blocking</h2>
     <label class="row">
-      <span>Block images globally</span>
+      <span>Block images, video, and audio globally</span>
       <input type="checkbox" id="global-enabled" />
     </label>
-    <p class="hint">Turn this off to load images everywhere, on every site, until switched back on.</p>
+    <p class="hint">Turn this off to load everything everywhere, on every site, until switched back on.</p>
   </section>
 
   <section>
@@ -98,13 +98,14 @@
     <p class="hint">
       Checking size costs one small extra request per blocked image (headers
       only) — a deliberate tradeoff for convenience, not a bandwidth
-      optimization.
+      optimization. Video and audio always require a tap and are never
+      auto-loaded, regardless of this setting.
     </p>
   </section>
 
   <section>
     <h2>Per-site allowlist</h2>
-    <p class="hint">Domains where images always load normally. The toolbar icon's one-tap toggle edits this same list.</p>
+    <p class="hint">Domains where images, video, and audio always load normally. The right-click menu's per-site toggle edits this same list.</p>
     <ul id="allowlist-list"></ul>
     <form class="add-row" id="add-form">
       <input type="text" id="add-domain" placeholder="example.com" />

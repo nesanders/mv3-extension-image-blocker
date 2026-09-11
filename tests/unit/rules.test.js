@@ -42,7 +42,7 @@ describe('siteRuleId / sessionRuleId', () => {
 });
 
 describe('buildSiteAllowRule', () => {
-  it('produces a persistent allow rule scoped to the domain and image resource type', () => {
+  it('produces a persistent allow rule scoped to the domain and image/media resource types', () => {
     const rule = buildSiteAllowRule(12345, 'example.com');
     expect(rule).toEqual({
       id: 12345,
@@ -50,14 +50,14 @@ describe('buildSiteAllowRule', () => {
       action: { type: 'allow' },
       condition: {
         requestDomains: ['example.com'],
-        resourceTypes: ['image']
+        resourceTypes: ['image', 'media']
       }
     });
   });
 });
 
 describe('buildTabImageAllowRule', () => {
-  it('produces a session allow rule scoped to the exact URL and tab', () => {
+  it('produces a session allow rule scoped to the exact URL, tab, and image/media resource types', () => {
     const rule = buildTabImageAllowRule(999, 'https://example.com/a.png', 42);
     expect(rule).toEqual({
       id: 999,
@@ -66,7 +66,7 @@ describe('buildTabImageAllowRule', () => {
       condition: {
         urlFilter: 'https://example.com/a.png',
         tabIds: [42],
-        resourceTypes: ['image']
+        resourceTypes: ['image', 'media']
       }
     });
   });

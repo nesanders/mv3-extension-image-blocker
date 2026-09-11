@@ -4,7 +4,7 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "resourceTypes": ["image"]
+      "resourceTypes": ["image", "media"]
     }
   }
 ]

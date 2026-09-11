@@ -1,13 +1,18 @@
-// Content script: detects images blocked by the static DNR rule (they fire
-// a normal `error` event, same as any broken image), renders a placeholder
-// in their place, and drives the click-to-load flow. `lib/domain.js`,
-// `lib/rules.js` and `lib/decisions.js` are loaded before this file (see
-// manifest.json) and expose their helpers as plain globals.
+// Content script: detects images, video, and audio blocked by the static
+// DNR rule (they fire a normal `error` event, same as any broken
+// image/media element), renders a placeholder in their place, and drives
+// the click-to-load flow. `lib/domain.js`, `lib/rules.js` and
+// `lib/decisions.js` are loaded before this file (see manifest.json) and
+// expose their helpers as plain globals.
 (function () {
   'use strict';
 
   const STATE = { blocked: 'blocked', loading: 'loading', loaded: 'loaded', failed: 'failed' };
   const DEFAULT_BOX = { width: 120, height: 90 };
+  // <audio> elements are rarely given explicit width/height (the native
+  // control bar is short and wide) - fall back to something that looks
+  // like a control bar instead of a big square box.
+  const DEFAULT_AUDIO_BOX = { width: 300, height: 32 };
   const DEFAULTS = {
     globalBlockingEnabled: true,
     siteAllowlist: [],
@@ -15,8 +20,31 @@
     sizeThresholdKB: 50
   };
 
-  // container (an <img>, or the <picture> wrapping one) -> { ph, img }
+  const PLACEHOLDER_TEXT = {
+    image: { icon: '\u{1F5BC}️', label: 'Tap to load image' },
+    video: { icon: '\u{25B6}️', label: 'Tap to load video' },
+    audio: { icon: '\u{1F50A}', label: 'Tap to load audio' }
+  };
+
+  // container (an <img>/<picture>, or a <video>/<audio> element itself) ->
+  // { ph, el, kind }
   const placeholderMap = new Map();
+
+  function mediaKind(el) {
+    if (el instanceof HTMLImageElement) return 'image';
+    if (el instanceof HTMLVideoElement) return 'video';
+    if (el instanceof HTMLAudioElement) return 'audio';
+    return null;
+  }
+
+  // <video>/<audio> can supply their source via a direct `src` attribute
+  // or via child <source> elements - currentSrc reflects whichever the
+  // browser resolved, but that resolution never completes for a blocked
+  // element, so fall back to reading the markup directly.
+  function firstSourceUrl(el) {
+    const source = el.querySelector && el.querySelector('source[src]');
+    return source ? source.src : '';
+  }
 
   function sendMessage(msg) {
     return new Promise((resolve) => {
@@ -38,74 +66,84 @@
     return chrome.storage.local.get(DEFAULTS);
   }
 
-  function getDims(img) {
-    const wAttr = parseInt(img.getAttribute('width'), 10);
-    const hAttr = parseInt(img.getAttribute('height'), 10);
+  function getDims(el) {
+    const wAttr = parseInt(el.getAttribute('width'), 10);
+    const hAttr = parseInt(el.getAttribute('height'), 10);
     if (wAttr > 0 && hAttr > 0) return { width: wAttr, height: hAttr };
 
-    const wStyle = parseInt(img.style.width, 10);
-    const hStyle = parseInt(img.style.height, 10);
+    const wStyle = parseInt(el.style.width, 10);
+    const hStyle = parseInt(el.style.height, 10);
     if (wStyle > 0 && hStyle > 0) return { width: wStyle, height: hStyle };
 
-    return Object.assign({}, DEFAULT_BOX);
+    return Object.assign({}, el instanceof HTMLAudioElement ? DEFAULT_AUDIO_BOX : DEFAULT_BOX);
   }
 
-  // --- <img>/<picture> placeholder handling --------------------------------
+  // --- <img>/<picture>/<video>/<audio> placeholder handling ----------------
 
-  async function handleImgError(event) {
-    const img = event.target;
-    if (!(img instanceof HTMLImageElement)) return;
+  async function handleMediaError(event) {
+    const el = event.target;
+    const kind = mediaKind(el);
+    if (!kind) return;
 
-    const state = img.dataset.ctliState;
+    const state = el.dataset.ctliState;
     if (state === STATE.loading) {
-      onRetryFailed(img);
+      onRetryFailed(el);
       return;
     }
     if (state) return; // already showing a placeholder / already loaded
 
-    const src = img.currentSrc || img.src;
+    const src = el.currentSrc || el.src || (kind !== 'image' && firstSourceUrl(el));
     if (!src || src.startsWith('data:')) return;
 
-    img.dataset.ctliOriginalSrc = src;
-    img.dataset.ctliState = STATE.blocked;
+    el.dataset.ctliOriginalSrc = src;
+    el.dataset.ctliState = STATE.blocked;
 
-    const settings = await getSettingsFromStorage();
-    const container = img.closest('picture') || img;
+    const container = kind === 'image' ? el.closest('picture') || el : el;
 
-    if (settings.sizeThresholdEnabled) {
-      const resp = await sendMessage({ type: 'checkSize', url: src });
-      const sizeBytes = resp && resp.sizeBytes;
-      if (shouldAutoLoad(sizeBytes, settings.sizeThresholdEnabled, settings.sizeThresholdKB)) {
-        loadImageForElement(img, container);
-        return;
-      }
-      showPlaceholder(img, container, sizeBytes);
+    if (kind !== 'image') {
+      // Video/audio always shows a placeholder and requires a tap,
+      // regardless of the size-threshold setting - see
+      // lib/decisions.js's shouldAutoLoad.
+      showPlaceholder(el, container, null, kind);
       return;
     }
 
-    showPlaceholder(img, container, null);
+    const settings = await getSettingsFromStorage();
+    if (settings.sizeThresholdEnabled) {
+      const resp = await sendMessage({ type: 'checkSize', url: src });
+      const sizeBytes = resp && resp.sizeBytes;
+      if (shouldAutoLoad(sizeBytes, settings.sizeThresholdEnabled, settings.sizeThresholdKB, kind)) {
+        loadMediaForElement(el, container);
+        return;
+      }
+      showPlaceholder(el, container, sizeBytes, kind);
+      return;
+    }
+
+    showPlaceholder(el, container, null, kind);
   }
 
-  function showPlaceholder(img, container, sizeBytes) {
+  function showPlaceholder(el, container, sizeBytes, kind) {
     if (placeholderMap.has(container)) return;
 
-    const { width, height } = getDims(img);
+    const { width, height } = getDims(el);
+    const text = PLACEHOLDER_TEXT[kind] || PLACEHOLDER_TEXT.image;
     const ph = document.createElement('div');
-    ph.className = 'ctli-placeholder';
+    ph.className = 'ctli-placeholder ctli-placeholder--' + kind;
     ph.style.width = width + 'px';
     ph.style.height = height + 'px';
     ph.tabIndex = 0;
     ph.setAttribute('role', 'button');
-    ph.setAttribute('aria-label', 'Tap to load image');
+    ph.setAttribute('aria-label', text.label);
 
     const icon = document.createElement('span');
     icon.className = 'ctli-icon';
-    icon.textContent = '\u{1F5BC}️';
+    icon.textContent = text.icon;
 
     const label = document.createElement('span');
     label.className = 'ctli-label';
     const sizeLabel = formatSizeLabel(sizeBytes);
-    label.textContent = sizeLabel ? sizeLabel + ' · Tap to load' : 'Tap to load image';
+    label.textContent = sizeLabel ? sizeLabel + ' · Tap to load' : text.label;
 
     ph.appendChild(icon);
     ph.appendChild(label);
@@ -113,7 +151,7 @@
     const onActivate = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      loadImageForElement(img, container);
+      loadMediaForElement(el, container);
     };
     ph.addEventListener('click', onActivate);
     ph.addEventListener('keydown', (e) => {
@@ -123,7 +161,7 @@
     container.dataset.ctliHandled = '1';
     container.style.setProperty('display', 'none', 'important');
     container.insertAdjacentElement('beforebegin', ph);
-    placeholderMap.set(container, { ph, img });
+    placeholderMap.set(container, { ph, el, kind });
   }
 
   function updatePlaceholderStatus(container, text, isError) {
@@ -142,45 +180,58 @@
     delete container.dataset.ctliHandled;
   }
 
-  async function loadImageForElement(img, container) {
-    img.dataset.ctliState = STATE.loading;
+  async function loadMediaForElement(el, container) {
+    const kind = mediaKind(el);
+    el.dataset.ctliState = STATE.loading;
     updatePlaceholderStatus(container, 'Loading…', false);
 
-    const url = img.dataset.ctliOriginalSrc || img.currentSrc || img.src;
+    const url = el.dataset.ctliOriginalSrc || el.currentSrc || el.src;
     const resp = await sendMessage({ type: 'loadImage', url });
     if (!resp || !resp.ok) {
-      onRetryFailed(img);
+      onRetryFailed(el);
       return;
     }
 
-    img.addEventListener('load', () => onLoadSuccess(img, container, url), { once: true });
     // A failed reload surfaces through the same delegated `error` listener
-    // (handleImgError sees dataset.ctliState === 'loading' and routes to
-    // onRetryFailed), so no separate error listener is needed here.
-    // A `loading="lazy"` image can otherwise defer the reassigned src
-    // until the browser's own intersection heuristic decides to fetch it,
-    // which may not be immediate even when the element is on-screen - the
-    // person just tapped it, so load it now.
-    if (img.loading === 'lazy') img.loading = 'eager';
-    img.removeAttribute('src');
-    requestAnimationFrame(() => {
-      img.src = url;
-    });
+    // (handleMediaError sees dataset.ctliState === 'loading' and routes
+    // to onRetryFailed), so no separate error listener is needed here.
+    if (kind === 'image') {
+      el.addEventListener('load', () => onLoadSuccess(el, container, url), { once: true });
+      // A `loading="lazy"` image can otherwise defer the reassigned src
+      // until the browser's own intersection heuristic decides to fetch
+      // it, which may not be immediate even when on-screen - the person
+      // just tapped it, so load it now.
+      if (el.loading === 'lazy') el.loading = 'eager';
+      el.removeAttribute('src');
+      requestAnimationFrame(() => {
+        el.src = url;
+      });
+    } else {
+      // <video>/<audio>: `load()` re-runs resource selection against
+      // whatever's currently in `src`/child <source> elements - now
+      // allowed - rather than us needing to know which form was used.
+      // `loadeddata` is the first event that means "there's now
+      // something playable," analogous to <img>'s `load`.
+      el.addEventListener('loadeddata', () => onLoadSuccess(el, container, url), { once: true });
+      el.load();
+      if (el.autoplay) el.play().catch(() => {});
+    }
   }
 
-  function onLoadSuccess(img, container, url) {
-    img.dataset.ctliState = STATE.loaded;
+  function onLoadSuccess(el, container, url) {
+    el.dataset.ctliState = STATE.loaded;
     sendMessage({ type: 'imageLoaded', url });
     removePlaceholder(container);
   }
 
-  function onRetryFailed(img) {
-    img.dataset.ctliState = STATE.failed;
-    const container = img.closest('picture') || img;
+  function onRetryFailed(el) {
+    el.dataset.ctliState = STATE.failed;
+    const kind = mediaKind(el);
+    const container = kind === 'image' ? el.closest('picture') || el : el;
     updatePlaceholderStatus(container, 'Failed to load — tap to retry', true);
   }
 
-  document.addEventListener('error', handleImgError, true);
+  document.addEventListener('error', handleMediaError, true);
 
   // --- CSS background-image (best-effort, inline styles only) --------------
 
@@ -263,13 +314,13 @@
     document.addEventListener('DOMContentLoaded', startBackgroundImageObserver, { once: true });
   }
 
-  // --- Reacting to toggles (site/global) and "load all images" -------------
+  // --- Reacting to toggles (site/global) and "load everything" ---------------
 
   function reloadAllPlaceholders() {
     for (const [container, entry] of placeholderMap) {
-      const { img } = entry;
-      if (img.dataset.ctliState === STATE.blocked || img.dataset.ctliState === STATE.failed) {
-        loadImageForElement(img, container);
+      const { el } = entry;
+      if (el.dataset.ctliState === STATE.blocked || el.dataset.ctliState === STATE.failed) {
+        loadMediaForElement(el, container);
       }
     }
   }

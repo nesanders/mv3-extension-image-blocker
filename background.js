@@ -2,12 +2,16 @@
 // place that talks to declarativeNetRequest. Content scripts and the
 // popup/options pages never touch DNR directly - they read/write
 // chrome.storage.local, and this file reconciles DNR rules to match
-// whenever storage changes. That keeps "make images load" to one code
-// path regardless of whether it was triggered by a single click, the
-// per-site toggle, or the global toggle.
+// whenever storage changes. That keeps "make it load" to one code path
+// regardless of whether it was triggered by a single click, the per-site
+// toggle, or the global toggle - and regardless of whether the blocked
+// element is an image, a video, or audio. The static block rule
+// (rules/block-media.json) covers resourceTypes "image" and "media" -
+// DNR has no separate resourceType for video vs. audio, so "media" blocks
+// both <video> and <audio> elements together.
 importScripts('lib/domain.js', 'lib/rules.js', 'lib/decisions.js');
 
-const BLOCK_RULESET_ID = 'block-images';
+const BLOCK_RULESET_ID = 'block-media';
 
 // Toolbar icon variants used to show *global* blocking state at a glance -
 // distinct from the per-tab badge text, which reflects whether blocking is
@@ -41,14 +45,15 @@ const pendingSessionTimers = new Map();
 // vivaldi://extensions -> Load unpacked). Open this service worker's
 // console (chrome://extensions -> this extension -> "service worker" link
 // under "Inspect views") and reload a page: every request our block rule
-// matches gets logged here. If a site's images visibly load anyway, check
-// this log first - if the image's request never appears here at all, DNR
-// never saw it as resourceType "image" in the first place (a common cause:
-// a site's own JS fetches the image via fetch()/XHR - classified as
-// "xmlhttprequest", not "image" - and only assigns it to <img src> once
-// downloaded, e.g. for a fade-in effect; DNR can't distinguish that from
-// any other XHR call, so it can't be blocked without blocking way more
-// than images - see README's "Known limitations").
+// matches gets logged here. If a site's images/video visibly load anyway,
+// check this log first - if the request never appears here at all, DNR
+// never saw it as resourceType "image"/"media" in the first place (a
+// common cause: a site's own JS fetches the bytes via fetch()/XHR -
+// classified as "xmlhttprequest", not "image"/"media" - and only assigns
+// them to <img src>/<video src> once downloaded, e.g. for a fade-in
+// effect; DNR can't distinguish that from any other XHR call, so it can't
+// be blocked without blocking way more than images/video - see README's
+// "Known limitations").
 if (chrome.declarativeNetRequest.onRuleMatchedDebug) {
   chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((info) => {
     console.log('[CTLI] rule matched:', info.rule, info.request.type, info.request.url);
@@ -87,20 +92,20 @@ function setUpContextMenus() {
     chrome.contextMenus.create({
       id: 'ctli-toggle-global',
       type: 'checkbox',
-      title: 'Block images globally',
+      title: 'Block media globally',
       checked: true,
       contexts: ['action']
     });
     chrome.contextMenus.create({
       id: 'ctli-toggle-site',
       type: 'checkbox',
-      title: 'Block images on this site',
+      title: 'Block media on this site',
       checked: true,
       contexts: ['action']
     });
     chrome.contextMenus.create({
       id: 'ctli-load-all',
-      title: 'Load all images on this page',
+      title: 'Load everything on this page',
       contexts: ['action']
     });
     chrome.contextMenus.create({
@@ -127,7 +132,7 @@ async function updateGlobalMenuItem(enabled) {
 }
 
 // The context-menu item's label and checked state reflect the active
-// tab's current site ("Block images on x.com", checked when blocking is
+// tab's current site ("Block media on x.com", checked when blocking is
 // actually active there), since contextMenus items have no per-click
 // "about to show" hook in MV3 - we keep it current by refreshing on every
 // tab switch/navigation and every relevant storage change instead (see
@@ -135,7 +140,7 @@ async function updateGlobalMenuItem(enabled) {
 async function updateSiteMenuItem(tab) {
   if (!tab || !tab.url || !/^https?:/.test(tab.url)) {
     chrome.contextMenus
-      .update('ctli-toggle-site', { title: 'Block images on this site', enabled: false })
+      .update('ctli-toggle-site', { title: 'Block media on this site', enabled: false })
       .catch(() => {});
     return;
   }
@@ -145,7 +150,7 @@ async function updateSiteMenuItem(tab) {
   const isAllowed = isAllowlisted(hostname, settings.siteAllowlist);
   chrome.contextMenus
     .update('ctli-toggle-site', {
-      title: `Block images on ${hostname}`,
+      title: `Block media on ${hostname}`,
       checked: !isAllowed,
       enabled: true
     })

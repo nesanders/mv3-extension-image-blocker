@@ -33,6 +33,20 @@ describe('shouldAutoLoad', () => {
   it('ignores NaN sizes', () => {
     expect(shouldAutoLoad(NaN, true, 50)).toBe(false);
   });
+
+  it('never auto-loads video, even when small and under the threshold', () => {
+    expect(shouldAutoLoad(1024, true, 50, 'video')).toBe(false);
+    expect(shouldAutoLoad(1, true, 999999, 'video')).toBe(false);
+  });
+
+  it('never auto-loads audio either, for the same reason as video', () => {
+    expect(shouldAutoLoad(1024, true, 50, 'audio')).toBe(false);
+  });
+
+  it('treats an explicit "image" mediaType the same as the default (no mediaType)', () => {
+    expect(shouldAutoLoad(40 * 1024, true, 50, 'image')).toBe(true);
+    expect(shouldAutoLoad(60 * 1024, true, 50, 'image')).toBe(false);
+  });
 });
 
 describe('formatSizeLabel', () => {

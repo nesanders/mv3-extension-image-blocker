@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Click-to-Load Images",
   "version": "0.1.0",
-  "description": "Blocks images by default to save cellular data. Tap a placeholder to load that one image on demand.",
+  "description": "Blocks images, video, and audio by default to save cellular data. Tap a placeholder to load that one item on demand.",
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
@@ -30,9 +30,9 @@
   "declarative_net_request": {
     "rule_resources": [
       {
-        "id": "block-images",
+        "id": "block-media",
         "enabled": true,
-        "path": "rules/block-images.json"
+        "path": "rules/block-media.json"
       }
     ]
   },
@@ -42,7 +42,7 @@
       "suggested_key": {
         "default": "Alt+Shift+I"
       },
-      "description": "Toggle image blocking for the current site"
+      "description": "Toggle image/video/audio blocking for the current site"
     }
   },
   "icons": {

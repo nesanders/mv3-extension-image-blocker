@@ -48,6 +48,13 @@
   color: #8a2f26;
 }
 
+/* <audio> placeholders are short and wide (matching the native control
+   bar), so lay the icon and label out side by side instead of stacked. */
+.ctli-placeholder--audio {
+  flex-direction: row;
+  gap: 8px;
+}
+
 .ctli-bg-placeholder {
   position: absolute;
   inset: 0;

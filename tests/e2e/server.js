@@ -19,7 +19,8 @@ const CROSS_ORIGIN_PORT = MAIN_PORT + 1;
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.png': 'image/png',
-  '.js': 'text/javascript; charset=utf-8'
+  '.js': 'text/javascript; charset=utf-8',
+  '.webm': 'video/webm'
 };
 
 function serve(req, res) {

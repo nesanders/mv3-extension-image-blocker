@@ -23,20 +23,23 @@ you tap/click its placeholder.
   would hit for images without permissive CORS headers, since the browser
   loads the image itself rather than JavaScript reading the response
   bytes.
-- The per-site toolbar toggle and the options-page allowlist both write to
-  the same `siteAllowlist` setting, which the background worker mirrors
-  into a **persistent** DNR allow rule for that domain. The global toggle
-  just enables/disables the static block ruleset outright. All three
-  "make images load" entry points (single click, site toggle, global
-  toggle) ultimately drive the same content-script reload path.
+- The per-site toggle (right-click menu / popup) and the options-page
+  allowlist both write to the same `siteAllowlist` setting, which the
+  background worker mirrors into a **persistent** DNR allow rule for that
+  domain. The global toggle just enables/disables the static block
+  ruleset outright. All three "make images load" entry points (single
+  click, site toggle, global toggle) ultimately drive the same
+  content-script reload path.
 
 ## Controls
 
-- **Click the toolbar icon**: instantly toggles blocking for the current
-  site (no popup step). Badge shows "OFF" when blocking is off for the
-  active tab (globally or per-site), blank when it's on.
-- **Right-click / long-press the toolbar icon**: quick panel, global
-  toggle, "load all images on this page", and a link to options.
+- **Click the toolbar icon**: instantly toggles blocking **globally** (no
+  popup step). Badge shows "OFF" when blocking is off for the active tab
+  (globally or per-site), blank when it's on.
+- **Right-click / long-press the toolbar icon**: quick panel, a per-site
+  toggle labeled with the current site's state (e.g. "Block images on
+  example.com" / "Allow images on example.com"), "load all images on this
+  page", and a link to options.
 - **`Alt+Shift+I`** (configurable at `chrome://extensions/shortcuts`):
   toggles blocking for the current site. Desktop only — MV3 `commands`
   aren't generally available on mobile Chromium browsers.
@@ -81,6 +84,27 @@ enable Developer Mode → **Load unpacked** → select this directory.
 
 ## Known limitations
 
+- **Sites that load images via their own `fetch()`/`XHR` call (rather than
+  a plain `<img src>` load) can bypass blocking entirely.** DNR classifies
+  a `fetch()`/`XHR` request as resource type `xmlhttprequest`, not
+  `image` — this is the same mechanism this extension's own click-to-load
+  flow relies on (see "How it works" above), but some sites use it
+  themselves for their *initial* image load too (a common pattern for a
+  smooth fade-in-once-downloaded effect on image-heavy/lazy-loaded pages).
+  There's no way to block only "the XHR calls that happen to fetch
+  images" without also blocking arbitrary API/XHR traffic the page relies
+  on for everything else — this is an inherent limit of `declarativeNetRequest`
+  in MV3 (no equivalent of MV2's blocking `webRequest`, which could
+  inspect a response and decide per-request), not a bug to fix here.
+  **To check whether this is what's happening on a given site:** open
+  `chrome://extensions` (or `vivaldi://extensions`) → this extension →
+  "service worker" under *Inspect views* → Console, then reload the page.
+  Every request our block rule actually matches gets logged there
+  (`[CTLI] rule matched: ...`). If an image that displays anyway never
+  shows up in that log, DNR never saw it as an `image`-type request in the
+  first place — confirm by opening the page's own DevTools Network tab,
+  filtering to that request, and checking its "Type" column for `fetch`/
+  `xhr` instead of `img`/`document`.
 - **Requires Developer Mode sideloading on Android**, since this isn't a
   Chrome Web Store listing. Some Vivaldi Android builds may not yet fully
   support Load Unpacked — verify against your installed Vivaldi version

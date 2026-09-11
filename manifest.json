@@ -16,7 +16,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Click-to-Load Images: tap to toggle blocking for this site"
+    "default_title": "Click-to-Load Images: tap to toggle blocking globally (right-click for per-site and more)"
   },
   "content_scripts": [
     {

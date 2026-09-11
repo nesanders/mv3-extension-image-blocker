@@ -23,6 +23,26 @@ const SESSION_RULE_TIMEOUT_MS = 10000;
 // clearStaleSessionRules() on the next worker startup.
 const pendingSessionTimers = new Map();
 
+// --- Diagnostics (unpacked/dev-mode only) ---------------------------------
+// onRuleMatchedDebug only fires for unpacked (developer-mode) extensions,
+// which matches how this extension is loaded (chrome://extensions or
+// vivaldi://extensions -> Load unpacked). Open this service worker's
+// console (chrome://extensions -> this extension -> "service worker" link
+// under "Inspect views") and reload a page: every request our block rule
+// matches gets logged here. If a site's images visibly load anyway, check
+// this log first - if the image's request never appears here at all, DNR
+// never saw it as resourceType "image" in the first place (a common cause:
+// a site's own JS fetches the image via fetch()/XHR - classified as
+// "xmlhttprequest", not "image" - and only assigns it to <img src> once
+// downloaded, e.g. for a fade-in effect; DNR can't distinguish that from
+// any other XHR call, so it can't be blocked without blocking way more
+// than images - see README's "Known limitations").
+if (chrome.declarativeNetRequest.onRuleMatchedDebug) {
+  chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((info) => {
+    console.log('[CTLI] rule matched:', info.rule, info.request.type, info.request.url);
+  });
+}
+
 function getSettings() {
   return chrome.storage.local.get(DEFAULT_SETTINGS);
 }
@@ -53,8 +73,8 @@ function setUpContextMenus() {
       contexts: ['action']
     });
     chrome.contextMenus.create({
-      id: 'ctli-toggle-global',
-      title: 'Toggle blocking globally',
+      id: 'ctli-toggle-site',
+      title: 'Toggle blocking for this site',
       contexts: ['action']
     });
     chrome.contextMenus.create({
@@ -67,13 +87,37 @@ function setUpContextMenus() {
       title: 'Open options',
       contexts: ['action']
     });
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab) updateSiteMenuItem(tab);
+    });
   });
+}
+
+// The context-menu item's label reflects the active tab's current site
+// state ("Block images on x.com" vs. "Allow images on x.com"), since
+// contextMenus items have no per-click "about to show" hook in MV3 - we
+// keep it current by refreshing on every tab switch/navigation and every
+// relevant storage change instead (see tabs.onActivated/onUpdated below
+// and the storage.onChanged listener).
+async function updateSiteMenuItem(tab) {
+  if (!tab || !tab.url || !/^https?:/.test(tab.url)) {
+    chrome.contextMenus
+      .update('ctli-toggle-site', { title: 'Toggle blocking for this site', enabled: false })
+      .catch(() => {});
+    return;
+  }
+  const hostname = extractHostname(tab.url);
+  if (!hostname) return;
+  const settings = await getSettings();
+  const isAllowed = isAllowlisted(hostname, settings.siteAllowlist);
+  const title = isAllowed ? `Block images on ${hostname}` : `Allow images on ${hostname}`;
+  chrome.contextMenus.update('ctli-toggle-site', { title, enabled: true }).catch(() => {});
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === 'ctli-open-popup') {
     // No default_popup is set in the manifest, so a primary click on the
-    // toolbar icon fires action.onClicked (the instant per-site toggle)
+    // toolbar icon fires action.onClicked (the instant global toggle)
     // instead of opening a popup - that's required for the one-tap
     // interaction. To still offer popup.html's secondary controls from
     // this context-menu item, set it as the popup just long enough to
@@ -91,8 +135,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     } else {
       chrome.runtime.openOptionsPage();
     }
-  } else if (info.menuItemId === 'ctli-toggle-global') {
-    await toggleGlobal();
+  } else if (info.menuItemId === 'ctli-toggle-site') {
+    await toggleSiteForTab(tab);
   } else if (info.menuItemId === 'ctli-load-all') {
     if (tab && tab.id) {
       chrome.tabs.sendMessage(tab.id, { type: 'reloadPlaceholders' }).catch(() => {});
@@ -162,6 +206,8 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   }
   if (changes.siteAllowlist || changes.globalBlockingEnabled) {
     await updateAllBadges();
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab) updateSiteMenuItem(activeTab);
   }
   if (becameMorePermissive) {
     await broadcastReload();
@@ -209,12 +255,16 @@ async function updateAllBadges() {
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (tab) updateBadgeForTab(tab.id, tab.url);
+  if (tab) {
+    updateBadgeForTab(tab.id, tab.url);
+    updateSiteMenuItem(tab);
+  }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' || changeInfo.url) {
     updateBadgeForTab(tabId, tab.url);
+    if (tab.active) updateSiteMenuItem(tab);
   }
 });
 
@@ -241,8 +291,8 @@ async function toggleGlobal() {
   await chrome.storage.local.set({ globalBlockingEnabled: !settings.globalBlockingEnabled });
 }
 
-chrome.action.onClicked.addListener((tab) => {
-  toggleSiteForTab(tab);
+chrome.action.onClicked.addListener(() => {
+  toggleGlobal();
 });
 
 chrome.commands.onCommand.addListener(async (command) => {

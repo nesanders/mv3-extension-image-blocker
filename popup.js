@@ -1,9 +1,9 @@
-// Secondary controls popup. The primary interaction (one-tap toggle for the
-// current site) lives on the toolbar icon itself via action.onClicked in
-// background.js — this popup is for the less-frequent global toggle and a
-// manual "load everything on this page" action, reachable via right-click
-// > "Open options" style secondary access rather than being the only path
-// to the primary toggle.
+// Secondary controls popup. The primary interaction (one-tap global toggle)
+// lives on the toolbar icon itself via action.onClicked in background.js —
+// this popup (and the right-click context menu) is for the less-frequent
+// per-site toggle and a manual "load everything on this page" action,
+// reachable via right-click rather than being the only path to either
+// toggle.
 const DEFAULTS = {
   globalBlockingEnabled: true,
   siteAllowlist: [],

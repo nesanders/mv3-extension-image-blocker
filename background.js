@@ -9,6 +9,18 @@ importScripts('lib/domain.js', 'lib/rules.js', 'lib/decisions.js');
 
 const BLOCK_RULESET_ID = 'block-images';
 
+// Toolbar icon variants used to show *global* blocking state at a glance -
+// distinct from the per-tab badge text, which reflects whether blocking is
+// active for the current tab specifically (global AND site combined). This
+// is set without a tabId, so it applies everywhere, not just one tab.
+const ICON_ON = { 16: 'icons/icon16.png', 32: 'icons/icon32.png', 48: 'icons/icon48.png', 128: 'icons/icon128.png' };
+const ICON_OFF = {
+  16: 'icons/icon16-off.png',
+  32: 'icons/icon32-off.png',
+  48: 'icons/icon48-off.png',
+  128: 'icons/icon128-off.png'
+};
+
 const DEFAULT_SETTINGS = {
   globalBlockingEnabled: true,
   siteAllowlist: [],
@@ -73,8 +85,17 @@ function setUpContextMenus() {
       contexts: ['action']
     });
     chrome.contextMenus.create({
+      id: 'ctli-toggle-global',
+      type: 'checkbox',
+      title: 'Block images globally',
+      checked: true,
+      contexts: ['action']
+    });
+    chrome.contextMenus.create({
       id: 'ctli-toggle-site',
-      title: 'Toggle blocking for this site',
+      type: 'checkbox',
+      title: 'Block images on this site',
+      checked: true,
       contexts: ['action']
     });
     chrome.contextMenus.create({
@@ -87,22 +108,34 @@ function setUpContextMenus() {
       title: 'Open options',
       contexts: ['action']
     });
+    getSettings().then((settings) => updateGlobalMenuItem(settings.globalBlockingEnabled));
     chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
       if (tab) updateSiteMenuItem(tab);
     });
   });
 }
 
-// The context-menu item's label reflects the active tab's current site
-// state ("Block images on x.com" vs. "Allow images on x.com"), since
-// contextMenus items have no per-click "about to show" hook in MV3 - we
-// keep it current by refreshing on every tab switch/navigation and every
-// relevant storage change instead (see tabs.onActivated/onUpdated below
-// and the storage.onChanged listener).
+// checkbox-type menu items show a checkmark reflecting `checked`, giving a
+// real on/off indicator in the right-click menu (not just an action
+// label). We always set `checked` explicitly from the real stored state
+// rather than trusting Chrome's own optimistic toggle-on-click, so it
+// can't drift out of sync with what's actually happening.
+async function updateGlobalMenuItem(enabled) {
+  chrome.contextMenus
+    .update('ctli-toggle-global', { checked: !!enabled })
+    .catch(() => {});
+}
+
+// The context-menu item's label and checked state reflect the active
+// tab's current site ("Block images on x.com", checked when blocking is
+// actually active there), since contextMenus items have no per-click
+// "about to show" hook in MV3 - we keep it current by refreshing on every
+// tab switch/navigation and every relevant storage change instead (see
+// tabs.onActivated/onUpdated below and the storage.onChanged listener).
 async function updateSiteMenuItem(tab) {
   if (!tab || !tab.url || !/^https?:/.test(tab.url)) {
     chrome.contextMenus
-      .update('ctli-toggle-site', { title: 'Toggle blocking for this site', enabled: false })
+      .update('ctli-toggle-site', { title: 'Block images on this site', enabled: false })
       .catch(() => {});
     return;
   }
@@ -110,8 +143,13 @@ async function updateSiteMenuItem(tab) {
   if (!hostname) return;
   const settings = await getSettings();
   const isAllowed = isAllowlisted(hostname, settings.siteAllowlist);
-  const title = isAllowed ? `Block images on ${hostname}` : `Allow images on ${hostname}`;
-  chrome.contextMenus.update('ctli-toggle-site', { title, enabled: true }).catch(() => {});
+  chrome.contextMenus
+    .update('ctli-toggle-site', {
+      title: `Block images on ${hostname}`,
+      checked: !isAllowed,
+      enabled: true
+    })
+    .catch(() => {});
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -135,6 +173,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     } else {
       chrome.runtime.openOptionsPage();
     }
+  } else if (info.menuItemId === 'ctli-toggle-global') {
+    await toggleGlobal();
   } else if (info.menuItemId === 'ctli-toggle-site') {
     await toggleSiteForTab(tab);
   } else if (info.menuItemId === 'ctli-load-all') {
@@ -158,6 +198,8 @@ async function applyGlobalRulesetState(enabled) {
       disableRulesetIds: [BLOCK_RULESET_ID]
     });
   }
+  await chrome.action.setIcon({ path: enabled ? ICON_ON : ICON_OFF }).catch(() => {});
+  await updateGlobalMenuItem(enabled);
 }
 
 async function reconcileSiteRules(newList, oldList) {

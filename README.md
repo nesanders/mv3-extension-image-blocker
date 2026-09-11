@@ -34,12 +34,20 @@ you tap/click its placeholder.
 ## Controls
 
 - **Click the toolbar icon**: instantly toggles blocking **globally** (no
-  popup step). Badge shows "OFF" when blocking is off for the active tab
-  (globally or per-site), blank when it's on.
-- **Right-click / long-press the toolbar icon**: quick panel, a per-site
-  toggle labeled with the current site's state (e.g. "Block images on
-  example.com" / "Allow images on example.com"), "load all images on this
-  page", and a link to options.
+  popup step). Two independent indicators show state at a glance:
+  - The **icon itself** dims/grays out when global blocking is off — this
+    applies everywhere (it's not per-tab), so it always reflects the true
+    global switch regardless of which site you're on.
+  - The **badge** ("OFF" text) is per-tab: it reflects whether blocking is
+    actually active for *this* tab specifically (off if either global
+    blocking is off, or this site is on the allowlist), blank when it's
+    on.
+- **Right-click / long-press the toolbar icon**: a quick panel, plus two
+  checkbox-style menu items that show a checkmark for current state as
+  well as toggling it — "Block images globally" and a per-site item
+  labeled with the current site's hostname (e.g. "Block images on
+  example.com", checked when blocking is actually active there) — along
+  with "load all images on this page" and a link to options.
 - **`Alt+Shift+I`** (configurable at `chrome://extensions/shortcuts`):
   toggles blocking for the current site. Desktop only — MV3 `commands`
   aren't generally available on mobile Chromium browsers.

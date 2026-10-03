@@ -64,20 +64,46 @@ function getSettings() {
   return chrome.storage.local.get(DEFAULT_SETTINGS);
 }
 
+// --- DNR mutation serialization --------------------------------------------
+// Several functions below read the currently-registered rules, compute a
+// collision-free id against that snapshot, then write - a classic
+// check-then-act sequence. The service worker is single-threaded, but
+// `await`s let separate calls interleave (e.g. two placeholders for the
+// same image reload concurrently and both call loadImage() for the same
+// tab+url), so without serialization two interleaved calls can both read
+// "no rule yet", both resolve to the same id, and the second write throws
+// "Rule with id <n> does not have a unique ID" - the same crash a hash
+// collision causes, just self-inflicted by concurrency instead. Routing
+// every DNR-mutating call through one promise chain makes each one run
+// to completion before the next starts, which removes the race without
+// requiring every call site to reason about concurrency itself.
+let dnrMutationQueue = Promise.resolve();
+function serialized(fn) {
+  return (...args) => {
+    const run = dnrMutationQueue.then(() => fn(...args));
+    // Keep the chain alive even if this call rejects, so one failure
+    // doesn't permanently wedge every later call behind a rejected link.
+    dnrMutationQueue = run.then(
+      () => {},
+      () => {}
+    );
+    return run;
+  };
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   const current = await chrome.storage.local.get(null);
   const merged = { ...DEFAULT_SETTINGS, ...current };
   await chrome.storage.local.set(merged);
-  await applyGlobalRulesetState(merged.globalBlockingEnabled);
-  await reconcileSiteRules(merged.siteAllowlist, []);
+  await applyGlobalRulesetState();
+  await reconcileSiteRules();
   setUpContextMenus();
   await updateAllBadges();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  const settings = await getSettings();
-  await applyGlobalRulesetState(settings.globalBlockingEnabled);
-  await reconcileSiteRules(settings.siteAllowlist, settings.siteAllowlist);
+  await applyGlobalRulesetState();
+  await reconcileSiteRules();
   await clearStaleSessionRules();
   await updateAllBadges();
 });
@@ -193,8 +219,20 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // --- DNR reconciliation -----------------------------------------------
 
-async function applyGlobalRulesetState(enabled) {
-  if (enabled) {
+// Takes no arguments and re-reads the current setting from storage itself,
+// rather than trusting a value a caller captured earlier - serialized()
+// means an arbitrary number of other queued operations can run between
+// "a caller decided this needs reconciling" and "this function actually
+// runs," during which storage can change again. A value captured at call
+// time would then be stale by the time it's actually used, silently
+// reverting whatever changed in between (this was a real, reproducible
+// bug: see reconcileSiteRulesImpl below for the concrete failure mode).
+// Reading fresh at execution time instead means this always reconciles
+// against the true current desired state, however long it waited in the
+// queue.
+async function applyGlobalRulesetStateImpl() {
+  const { globalBlockingEnabled } = await getSettings();
+  if (globalBlockingEnabled) {
     await chrome.declarativeNetRequest.updateEnabledRulesets({
       enableRulesetIds: [BLOCK_RULESET_ID]
     });
@@ -203,61 +241,118 @@ async function applyGlobalRulesetState(enabled) {
       disableRulesetIds: [BLOCK_RULESET_ID]
     });
   }
-  await chrome.action.setIcon({ path: enabled ? ICON_ON : ICON_OFF }).catch(() => {});
-  await updateGlobalMenuItem(enabled);
+  await chrome.action.setIcon({ path: globalBlockingEnabled ? ICON_ON : ICON_OFF }).catch(() => {});
+  await updateGlobalMenuItem(globalBlockingEnabled);
 }
+const applyGlobalRulesetState = serialized(applyGlobalRulesetStateImpl);
 
-async function reconcileSiteRules(newList, oldList) {
-  newList = newList || [];
-  oldList = oldList || [];
-  const added = newList.filter((d) => !oldList.includes(d));
-  const removed = oldList.filter((d) => !newList.includes(d));
+// Reconciles dynamic (persistent, site-allowlist) rules to match the
+// *current* siteAllowlist setting (re-read from storage here, not passed
+// in - see applyGlobalRulesetStateImpl's comment above for why), diffed
+// against what Chrome actually has registered right now rather than
+// against a caller-supplied "previous" list. Together this makes
+// reconciliation idempotent and self-healing: safe to call after a
+// browser restart, after an extension update where last run's rules are
+// still sitting there, or after sitting in the serialized() queue behind
+// other operations for an unknown amount of time.
+//
+// A real, reproducible bug this fixes: reconcileSiteRules used to take
+// the desired list as a parameter. onInstalled calls it once directly
+// with the list it read at startup; chrome.storage.local.set() in that
+// same handler also fires storage.onChanged, whose listener calls it
+// again with the list from the change event. Once calls started queuing
+// behind each other (serialized()), onInstalled's own call - carrying a
+// value captured before the handler even started - could end up
+// executing *after* a legitimate concurrent change (e.g. the person
+// editing the allowlist within the first instant of a fresh install).
+// Reconciling against that stale snapshot then deleted the rule the
+// newer change had just added, deterministically whenever the timing
+// landed that way. Re-reading storage at execution time removes the
+// stale value entirely - there's nothing left to go stale.
+async function reconcileSiteRulesImpl() {
+  const { siteAllowlist } = await getSettings();
+  const desiredList = siteAllowlist || [];
 
-  const addRules = added.map((domain) => buildSiteAllowRule(siteRuleId(domain), domain));
-  const removeRuleIds = removed.map((domain) => siteRuleId(domain));
-
-  if (addRules.length || removeRuleIds.length) {
-    await chrome.declarativeNetRequest.updateDynamicRules({ addRules, removeRuleIds });
+  const existing = await chrome.declarativeNetRequest.getDynamicRules();
+  const usedIds = new Set(existing.map((r) => r.id));
+  const domainToId = new Map();
+  for (const r of existing) {
+    const domain = r.condition && r.condition.requestDomains && r.condition.requestDomains[0];
+    if (domain) domainToId.set(domain, r.id);
   }
-}
 
-async function clearStaleSessionRules() {
+  const added = desiredList.filter((d) => !domainToId.has(d));
+  const removed = Array.from(domainToId.keys()).filter((d) => !desiredList.includes(d));
+  if (!added.length && !removed.length) return;
+
+  const removeRuleIds = removed.map((domain) => domainToId.get(domain));
+  const freedIds = new Set(removeRuleIds);
+
+  // siteRuleId() is a hash, not an allocator - two different domains can
+  // land on the same id. Resolve against the registered-id set above
+  // rather than trusting the hash blindly, or a collision throws "Rule
+  // with id <n> does not have a unique ID" as an uncaught rejection and
+  // silently drops this entire update (DNR applies updateDynamicRules
+  // atomically).
+  const addRules = added.map((domain) => {
+    const id = resolveRuleId(siteRuleId(domain), usedIds, freedIds, SITE_RULE_ID_BASE, SITE_RULE_ID_RANGE);
+    usedIds.add(id);
+    return buildSiteAllowRule(id, domain);
+  });
+
+  await chrome.declarativeNetRequest.updateDynamicRules({ addRules, removeRuleIds });
+}
+const reconcileSiteRules = serialized(reconcileSiteRulesImpl);
+
+async function clearStaleSessionRulesImpl() {
   const existing = await chrome.declarativeNetRequest.getSessionRules();
   const ids = existing.map((r) => r.id);
   if (ids.length) {
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: ids });
   }
 }
+const clearStaleSessionRules = serialized(clearStaleSessionRulesImpl);
 
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== 'local') return;
 
-  // Only reload already-open tabs' placeholders when blocking genuinely
-  // became *more permissive* than it was a moment ago - never on the
-  // initial defaults being written at install, and never for an unrelated
-  // settings change (e.g. the size threshold), which would otherwise
-  // force-load every placeholder on every open tab for no reason.
-  let becameMorePermissive = false;
+  // Everything below runs in one async function, so one unexpected
+  // rejection partway through (DNR calls especially - see
+  // reconcileSiteRules/loadImage) would otherwise silently skip every
+  // later step in this invocation, leaving the icon/badge/menu stuck
+  // until the next change. Catch and log instead, so a single failure
+  // can't freeze the rest of the UI feedback.
+  try {
+    // Only reload already-open tabs' placeholders when blocking genuinely
+    // became *more permissive* than it was a moment ago - never on the
+    // initial defaults being written at install, and never for an
+    // unrelated settings change (e.g. the size threshold), which would
+    // otherwise force-load every placeholder on every open tab for no
+    // reason.
+    let becameMorePermissive = false;
 
-  if (changes.siteAllowlist) {
-    const oldList = changes.siteAllowlist.oldValue || [];
-    const newList = changes.siteAllowlist.newValue || [];
-    await reconcileSiteRules(newList, oldList);
-    if (newList.some((d) => !oldList.includes(d))) becameMorePermissive = true;
-  }
-  if (changes.globalBlockingEnabled) {
-    await applyGlobalRulesetState(changes.globalBlockingEnabled.newValue);
-    if (changes.globalBlockingEnabled.oldValue === true && changes.globalBlockingEnabled.newValue === false) {
-      becameMorePermissive = true;
+    if (changes.siteAllowlist) {
+      const oldList = changes.siteAllowlist.oldValue || [];
+      const newList = changes.siteAllowlist.newValue || [];
+      await reconcileSiteRules();
+      if (newList.some((d) => !oldList.includes(d))) becameMorePermissive = true;
     }
-  }
-  if (changes.siteAllowlist || changes.globalBlockingEnabled) {
-    await updateAllBadges();
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTab) updateSiteMenuItem(activeTab);
-  }
-  if (becameMorePermissive) {
-    await broadcastReload();
+    if (changes.globalBlockingEnabled) {
+      await applyGlobalRulesetState();
+      if (changes.globalBlockingEnabled.oldValue === true && changes.globalBlockingEnabled.newValue === false) {
+        becameMorePermissive = true;
+      }
+    }
+    if (changes.siteAllowlist || changes.globalBlockingEnabled) {
+      await updateAllBadges();
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab) updateSiteMenuItem(activeTab);
+    }
+    if (becameMorePermissive) {
+      await broadcastReload();
+    }
+  } catch (e) {
+    console.error('[CTLI] storage.onChanged handler failed:', e);
   }
 });
 
@@ -392,14 +487,37 @@ async function getStateForMessage(sender) {
 
 // --- Click-to-load single image (session-scoped allow rule) --------------
 
-async function loadImage(url, tabId) {
+// Session rules are matched back up by their actual condition (not by
+// recomputing the hash) so a probed-around-a-collision id is still found
+// correctly later, regardless of how it was resolved when added.
+function findSessionRuleFor(existing, url, tabId) {
+  return existing.find(
+    (r) =>
+      r.condition &&
+      r.condition.urlFilter === url &&
+      Array.isArray(r.condition.tabIds) &&
+      r.condition.tabIds.includes(tabId)
+  );
+}
+
+async function loadImageImpl(url, tabId) {
   if (!url || !tabId) return { ok: false, error: 'missing url or tabId' };
 
-  const id = sessionRuleId(tabId, url);
+  // sessionRuleId() is a hash, not an allocator - resolve against what's
+  // actually registered so two different tab+url pairs can never collide
+  // (see reconcileSiteRules above for the same issue on dynamic rules,
+  // and why resolving against ground truth matters: an unresolved
+  // collision throws "Rule with id <n> does not have a unique ID" as an
+  // uncaught rejection).
+  const existing = await chrome.declarativeNetRequest.getSessionRules();
+  const usedIds = new Set(existing.map((r) => r.id));
+  const selfRule = findSessionRuleFor(existing, url, tabId);
+  const freedIds = new Set(selfRule ? [selfRule.id] : []);
+  const id = resolveRuleId(sessionRuleId(tabId, url), usedIds, freedIds, SESSION_RULE_ID_BASE, SESSION_RULE_ID_RANGE);
   const rule = buildTabImageAllowRule(id, url, tabId);
 
   await chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [id],
+    removeRuleIds: selfRule ? [selfRule.id] : [],
     addRules: [rule]
   });
 
@@ -416,19 +534,24 @@ async function loadImage(url, tabId) {
 
   return { ok: true };
 }
+const loadImage = serialized(loadImageImpl);
 
-async function imageLoaded(url, tabId) {
+async function imageLoadedImpl(url, tabId) {
   if (!url || !tabId) return { ok: true };
-  const id = sessionRuleId(tabId, url);
-  if (pendingSessionTimers.has(id)) {
-    clearTimeout(pendingSessionTimers.get(id));
-    pendingSessionTimers.delete(id);
+  const existing = await chrome.declarativeNetRequest.getSessionRules();
+  const rule = findSessionRuleFor(existing, url, tabId);
+  if (!rule) return { ok: true };
+
+  if (pendingSessionTimers.has(rule.id)) {
+    clearTimeout(pendingSessionTimers.get(rule.id));
+    pendingSessionTimers.delete(rule.id);
   }
   await chrome.declarativeNetRequest
-    .updateSessionRules({ removeRuleIds: [id] })
+    .updateSessionRules({ removeRuleIds: [rule.id] })
     .catch(() => {});
   return { ok: true };
 }
+const imageLoaded = serialized(imageLoadedImpl);
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const existing = await chrome.declarativeNetRequest.getSessionRules();
